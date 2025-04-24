@@ -1,0 +1,2 @@
+# Ignore all JSON files in the output directory
+output/*.json
