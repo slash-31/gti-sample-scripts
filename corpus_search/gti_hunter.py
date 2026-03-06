@@ -3,7 +3,8 @@
 GTI Enterprise Submission Hunter — Audit your own VirusTotal submission
 history, extract file hashes, and verify data exclusivity.
 
-Queries the /intelligence/search endpoint with ``submitter:me`` to find every
+Resolves your API key's user ID via /users/me, then queries the
+/intelligence/search endpoint with ``submitter:<user_id>`` to find every
 file uploaded by your API key in a given date range.  Paginates automatically,
 checks exclusivity via unique_sources, and exports results to CSV.
 
@@ -98,6 +99,24 @@ def api_get(url, headers, params, max_retries=MAX_RETRIES, retry_delay=RETRY_DEL
     return None
 
 
+def resolve_user_id(api_key):
+    """
+    Call /api/v3/users/me to resolve the actual user ID for this API key.
+    Returns the user ID string, or None on failure.
+    """
+    url = "https://www.virustotal.com/api/v3/users/me"
+    headers = {"x-apikey": api_key}
+    data = api_get(url, headers, params={})
+    if data is None:
+        return None
+    user_id = data.get('data', {}).get('id')
+    if user_id:
+        print(f"[*] Resolved API key to user ID: {user_id}")
+    else:
+        print("[-] Could not resolve user ID from /users/me response.")
+    return user_id
+
+
 def fetch_all_submissions(api_key, start_date, end_date, output_file, limit=None, exclusive_only=False):
     """
     Queries VirusTotal Intelligence for files submitted by the specific API key.
@@ -106,9 +125,16 @@ def fetch_all_submissions(api_key, start_date, end_date, output_file, limit=None
     base_url = "https://www.virustotal.com/api/v3/intelligence/search"
     headers = {"x-apikey": api_key}
 
-    # Query: 'submitter:me' restricts search to files uploaded by your API key
+    # Resolve the actual user ID so 'submitter:' filters correctly
+    user_id = resolve_user_id(api_key)
+    if user_id is None:
+        print("[-] Failed to resolve user identity. Falling back to 'submitter:me'.")
+        submitter = "me"
+    else:
+        submitter = user_id
+
     # 'fs' filters by first submission date range
-    query = f"submitter:me fs:{start_date}+ fs:{end_date}-"
+    query = f"submitter:{submitter} fs:{start_date}+ fs:{end_date}-"
     
     all_results = []
     type_counts = Counter()
