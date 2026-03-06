@@ -69,6 +69,7 @@ def api_get(url, headers, params, max_retries=MAX_RETRIES, retry_delay=RETRY_DEL
         try:
             response = requests.get(url, headers=headers, params=params, timeout=60)
 
+            # Only retry transient errors; 4xx (except 429) are client errors — fail fast
             if response.status_code == 429 or response.status_code >= 500:
                 wait = int(response.headers.get(
                     'Retry-After',
@@ -78,6 +79,11 @@ def api_get(url, headers, params, max_retries=MAX_RETRIES, retry_delay=RETRY_DEL
                       f"(attempt {attempt + 1}/{max_retries})...")
                 time.sleep(wait)
                 continue
+
+            # Non-retryable client errors (400, 401, 403, etc.) — fail immediately
+            if 400 <= response.status_code < 500:
+                print(f"[-] HTTP {response.status_code}: {response.text[:200]}")
+                return None
 
             response.raise_for_status()
             return response.json()
@@ -102,10 +108,7 @@ def fetch_all_submissions(api_key, start_date, end_date, output_file, limit=None
 
     # Query: 'submitter:me' restricts search to files uploaded by your API key
     # 'fs' filters by first submission date range
-    # 'unique_sources:1' restricts to files only you have submitted
     query = f"submitter:me fs:{start_date}+ fs:{end_date}-"
-    if exclusive_only:
-        query += " unique_sources:1"
     
     all_results = []
     type_counts = Counter()

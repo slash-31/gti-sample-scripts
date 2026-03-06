@@ -8,7 +8,7 @@ A CLI tool for auditing your own file submission history on [Google Threat Intel
 
 2. **Automated Pagination** — The API returns a maximum of 300 results per request. The script automatically manages cursors to loop through your entire history (e.g., thousands of files) without manual intervention.
 
-3. **Exclusivity Verification** — For every file found, the script checks the `unique_sources` attribute. If `unique_sources == 1`, the file is flagged as **Exclusive**, meaning you are the only entity in the world that has submitted that file to VirusTotal. With the `--exclusive` flag, the script filters results to **only** return exclusive files — both server-side (via the `unique_sources:1` query modifier) and client-side as a safety net.
+3. **Exclusivity Verification** — For every file found, the script checks the `unique_sources` attribute. If `unique_sources == 1`, the file is flagged as **Exclusive**, meaning you are the only entity in the world that has submitted that file to VirusTotal. With the `--exclusive` flag, the script filters results to **only** return exclusive files — non-exclusive files are discarded during pagination so only your unique submissions appear in the output and CSV.
 
 4. **Data Extraction** — For each file the script pulls:
    - SHA-256 hash
@@ -90,8 +90,7 @@ python gti_hunter.py -k YOUR_API_KEY -s 2025-01-01 -e 2025-06-30 -l 500
 ### Terminal — Progress
 
 ```
-[*] Querying GTI for: submitter:me fs:2025-01-01+ fs:2025-06-30-    # without -x
-[*] Querying GTI for: submitter:me fs:2025-01-01+ fs:2025-06-30- unique_sources:1  # with -x
+[*] Querying GTI for: submitter:me fs:2025-01-01+ fs:2025-06-30-
 [*] Approximately 3686 total files found.
 [+] Downloaded 300 records...
 [+] Downloaded 600 records...
