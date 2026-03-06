@@ -9,6 +9,7 @@ checks exclusivity via unique_sources, and exports results to CSV.
 
 Usage examples:
     python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30
+    python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30 -x
     python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30 -o audit.csv
     python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30 -l 500
 
@@ -23,7 +24,7 @@ import argparse
 import sys
 import time
 import random
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from collections import Counter
 
 try:
@@ -53,7 +54,7 @@ def format_epoch(epoch):
     if epoch is None or epoch == 'N/A':
         return 'N/A'
     try:
-        return datetime.utcfromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError, OSError):
         return str(epoch)
 
@@ -91,17 +92,20 @@ def api_get(url, headers, params, max_retries=MAX_RETRIES, retry_delay=RETRY_DEL
     return None
 
 
-def fetch_all_submissions(api_key, start_date, end_date, output_file, limit=None):
+def fetch_all_submissions(api_key, start_date, end_date, output_file, limit=None, exclusive_only=False):
     """
     Queries VirusTotal Intelligence for files submitted by the specific API key.
     Paginates through all results and exports to CSV.
     """
     base_url = "https://www.virustotal.com/api/v3/intelligence/search"
     headers = {"x-apikey": api_key}
-    
+
     # Query: 'submitter:me' restricts search to files uploaded by your API key
     # 'fs' filters by first submission date range
+    # 'unique_sources:1' restricts to files only you have submitted
     query = f"submitter:me fs:{start_date}+ fs:{end_date}-"
+    if exclusive_only:
+        query += " unique_sources:1"
     
     all_results = []
     type_counts = Counter()
@@ -140,9 +144,13 @@ def fetch_all_submissions(api_key, start_date, end_date, output_file, limit=None
             f_type = attr.get('type_description', 'N/A')
             unique_src = attr.get('unique_sources', 0)
 
-            # Verification Logic: 
+            # Verification Logic:
             # If unique_sources is 1, you are the ONLY person who has submitted this file.
             is_exclusive = "YES" if unique_src == 1 else "NO"
+
+            # Client-side filter: skip non-exclusive files when --exclusive is set
+            if exclusive_only and unique_src != 1:
+                continue
 
             all_results.append({
                 "sha256": sha256,
@@ -179,6 +187,8 @@ def main():
     parser.add_argument("-e", "--end", required=True, help="End Date (YYYY-MM-DD)")
     parser.add_argument("-o", "--output", default="my_submissions.csv", help="Output CSV file name")
     parser.add_argument("-l", "--limit", type=int, help="Optional: Cap total results")
+    parser.add_argument("-x", "--exclusive", action="store_true",
+                        help="Only return files where you are the sole submitter (unique_sources == 1)")
 
     args = parser.parse_args()
 
@@ -192,7 +202,7 @@ def main():
         print(f"[-] Start date '{args.start}' is after end date '{args.end}'.")
         sys.exit(1)
 
-    results, type_counts = fetch_all_submissions(args.key, args.start, args.end, args.output, args.limit)
+    results, type_counts = fetch_all_submissions(args.key, args.start, args.end, args.output, args.limit, args.exclusive)
 
     if results:
         # 1. Print a preview of the data (Top 10)
