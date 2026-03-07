@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
 GTI Enterprise Submission Hunter — Audit your organization's VirusTotal
-public corpus submissions, identify which files were submitted by your
-group, and verify data exclusivity.
+public corpus submissions with per-submitter attribution via source_key.
 
 Workflow:
-  1. Resolves your API key's source_key by submitting a probe to
-     /files/{hash}/submissions and matching the source_key back.
-  2. Discovers all source_keys belonging to your VT group.
-  3. Queries /intelligence/search with fs: date range to find candidate files.
-  4. For each file, checks /files/{hash}/submissions to see if any submission
-     came from your group's source_keys.
-  5. Exports matched files to CSV with submitter attribution.
+  1. Queries /intelligence/search with submitter:me + fs: date range to
+     get all files submitted by anyone in your VT group.
+  2. For each file, fetches /files/{hash}/submissions to retrieve the
+     source_key (unique per-API-key identifier) for every submission.
+  3. Exports all results to CSV with submitter source_key attribution.
+  4. Optionally filters to a specific source_key with --source-key.
 
 Usage examples:
+    # All group submissions in date range
     python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30
+
+    # Filter to a specific submitter's source_key
+    python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30 --source-key 324a3038
+
+    # Only exclusive files (unique_sources == 1)
     python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30 -x
-    python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30 -o audit.csv
-    python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30 -l 500
 
 Requirements:
     - requests
@@ -127,22 +129,6 @@ def resolve_user_and_group(api_key):
     return user_id, group_id, set()
 
 
-def get_my_source_key(api_key, known_hash):
-    """
-    Determine this API key's source_key by looking up submissions for a
-    file we know was submitted by this key.
-    Returns the source_key string or None.
-    """
-    headers = {"x-apikey": api_key}
-    data = api_get(f"{VT_BASE}/files/{known_hash}/submissions", headers, params={"limit": 40})
-    if data is None:
-        return None
-    for sub in data.get('data', []):
-        sk = sub.get('attributes', {}).get('source_key')
-        if sk:
-            return sk
-    return None
-
 
 def get_file_submissions(api_key, sha256):
     """
@@ -183,11 +169,14 @@ def discover_group_source_keys(api_key, group_id):
 
 
 def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
-                                 limit=None, exclusive_only=False, my_source_key=None):
+                                 limit=None, exclusive_only=False, filter_source_key=None):
     """
-    1. Query intelligence/search with fs: date range (returns public corpus).
-    2. For each file, check /files/{hash}/submissions for source_key matches.
-    3. Only include files where my_source_key appears in the submissions.
+    1. Query intelligence/search with submitter:me + fs: date range to get
+       all files submitted by anyone in the group.
+    2. For each file, fetch /files/{hash}/submissions to get source_key
+       attribution for every submitter.
+    3. If --source-key is provided, only include files from that submitter.
+       Otherwise include all files with their submitter source_keys.
     """
     headers = {"x-apikey": api_key}
     search_url = f"{VT_BASE}/intelligence/search"
@@ -197,11 +186,15 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
     query = f"submitter:me fs:{start_date}+ fs:{end_date}-"
     all_results = []
     type_counts = Counter()
+    source_key_counts = Counter()
     cursor = None
     total_checked = 0
 
-    print(f"[*] Searching public corpus: {query}")
-    print(f"[*] Will verify each file's submissions for source_key: {my_source_key}")
+    print(f"[*] Searching group submissions: {query}")
+    if filter_source_key:
+        print(f"[*] Filtering to source_key: {filter_source_key}")
+    else:
+        print(f"[*] Showing ALL group submissions with source_key attribution")
 
     while True:
         batch_limit = 300
@@ -221,7 +214,7 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
 
         if total_checked == 0:
             total_hits = data.get('meta', {}).get('total_hits', 'Unknown')
-            print(f"[*] Approximately {total_hits} files in date range (checking each for your submissions)...")
+            print(f"[*] Approximately {total_hits} files in date range...")
 
         files = data.get('data', [])
         if not files:
@@ -232,12 +225,25 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
             sha256 = f.get('id')
             total_checked += 1
 
-            # Check submissions for this file to find our source_key
+            # Fetch submission details to get source_key attribution
             subs = get_file_submissions(api_key, sha256)
-            my_subs = [s for s in subs if s.get('source_key') == my_source_key]
 
-            if not my_subs:
-                continue  # Not submitted by us
+            # Collect all unique source_keys for this file
+            file_source_keys = set()
+            earliest_sub = None
+            matched_sub = None
+            for s in subs:
+                sk = s.get('source_key', 'unknown')
+                file_source_keys.add(sk)
+                source_key_counts[sk] += 1
+                if earliest_sub is None or s.get('date', 0) < earliest_sub.get('date', 0):
+                    earliest_sub = s
+                if filter_source_key and sk == filter_source_key:
+                    matched_sub = s
+
+            # If filtering by source_key, skip files not from that submitter
+            if filter_source_key and filter_source_key not in file_source_keys:
+                continue
 
             f_type = attr.get('type_description', 'N/A')
             unique_src = attr.get('unique_sources', 0)
@@ -246,8 +252,8 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
             if exclusive_only and unique_src != 1:
                 continue
 
-            # Use the earliest submission by our key
-            my_sub_date = min(s.get('date', 0) for s in my_subs)
+            # Use the matched submission if filtering, otherwise the earliest
+            display_sub = matched_sub or earliest_sub or {}
 
             all_results.append({
                 "sha256": sha256,
@@ -257,18 +263,20 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
                 "exclusive_to_me": is_exclusive,
                 "unique_sources": unique_src,
                 "total_submissions": attr.get('times_submitted', 0),
-                "my_submission_date": format_epoch(my_sub_date),
+                "submission_date": format_epoch(display_sub.get('date')),
                 "first_submission_date": format_epoch(attr.get('first_submission_date')),
-                "source_key": my_source_key,
-                "submission_interface": my_subs[0].get('interface', 'N/A'),
-                "submission_country": my_subs[0].get('country', 'N/A'),
+                "source_key": display_sub.get('source_key', 'N/A'),
+                "all_source_keys": ", ".join(sorted(file_source_keys)),
+                "submission_interface": display_sub.get('interface', 'N/A'),
+                "submission_country": display_sub.get('country', 'N/A'),
+                "submission_city": display_sub.get('city', 'N/A'),
             })
             type_counts[f_type] += 1
 
             if limit and len(all_results) >= limit:
                 break
 
-        print(f"[+] Checked {total_checked} files, {len(all_results)} submitted by your key...")
+        print(f"[+] Checked {total_checked} files, {len(all_results)} matched...")
 
         if limit and len(all_results) >= limit:
             break
@@ -283,22 +291,23 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
             writer = csv.DictWriter(csvfile, fieldnames=all_results[0].keys())
             writer.writeheader()
             writer.writerows(all_results)
-        return all_results, type_counts
-    return None, None
+        return all_results, type_counts, source_key_counts
+    return None, None, None
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="GTI Enterprise Submission Hunter — Audit public corpus submissions by your API key")
+        description="GTI Enterprise Submission Hunter — Audit group corpus submissions with submitter attribution")
     parser.add_argument("-k", "--key", required=True, help="Your VirusTotal/GTI API Key")
     parser.add_argument("-s", "--start", required=True, help="Start Date (YYYY-MM-DD)")
     parser.add_argument("-e", "--end", required=True, help="End Date (YYYY-MM-DD)")
     parser.add_argument("-o", "--output", default="my_submissions.csv", help="Output CSV file name")
     parser.add_argument("-l", "--limit", type=int, help="Cap total matched results")
     parser.add_argument("-x", "--exclusive", action="store_true",
-                        help="Only return files where you are the sole submitter (unique_sources == 1)")
+                        help="Only return files where unique_sources == 1")
     parser.add_argument("--source-key", default=None,
-                        help="Your known source_key (skip auto-detection if you already know it)")
+                        help="Filter results to a specific submitter source_key "
+                             "(omit to show all group submissions)")
 
     args = parser.parse_args()
 
@@ -315,56 +324,37 @@ def main():
     # Step 1: Resolve user/group info
     user_id, group_id, _ = resolve_user_and_group(args.key)
 
-    # Step 2: Determine source_key
-    source_key = args.source_key
-    if not source_key:
-        print("\n[*] To identify your submissions, we need your source_key.")
-        print("[*] Submit a known test file first, then provide its hash,")
-        print("[*] or pass --source-key if you already know it.")
-        print("[*] Checking if a previously submitted test file exists...")
-
-        # Try to find source_key from a known test file submitted by this key
-        # User can also pass --source-key directly
-        test_hash = input("[?] Enter SHA256 of a file YOU submitted (or 'q' to quit): ").strip()
-        if test_hash.lower() == 'q':
-            sys.exit(0)
-
-        source_key = get_my_source_key(args.key, test_hash)
-        if source_key:
-            print(f"[+] Your source_key: {source_key}")
-        else:
-            print("[-] Could not determine source_key from that hash.")
-            print("[-] Make sure you submitted that file with this API key.")
-            sys.exit(1)
-    else:
-        print(f"[*] Using provided source_key: {source_key}")
-
-    # Step 3: Discover group members
+    # Step 2: Discover group members
     if group_id:
         group_users = discover_group_source_keys(args.key, group_id)
         print(f"[*] Group '{group_id}' has {len(group_users)} users.")
 
-    # Step 4: Search and audit
+    # Step 3: Search and audit all group submissions
     print()
-    results, type_counts = fetch_and_audit_submissions(
+    results, type_counts, source_key_counts = fetch_and_audit_submissions(
         args.key, args.start, args.end, args.output,
-        args.limit, args.exclusive, source_key
+        args.limit, args.exclusive, args.source_key
     )
 
     if results:
         print(f"\n### DATA PREVIEW (Top 10) ###")
         print(tabulate(results[:10], headers="keys", tablefmt="fancy_grid"))
 
-        print(f"\n### SUBMISSION SUMMARY BY TYPE ###")
+        print(f"\n### SUBMISSION SUMMARY BY FILE TYPE ###")
         summary_data = [[f_type, count] for f_type, count in type_counts.items()]
         print(tabulate(summary_data, headers=["File Type", "Count"], tablefmt="grid"))
 
+        print(f"\n### SUBMISSIONS BY SOURCE_KEY ###")
+        sk_data = [[sk, count] for sk, count in source_key_counts.most_common()]
+        print(tabulate(sk_data, headers=["source_key", "Files"], tablefmt="grid"))
+
         exclusive_total = sum(1 for r in results if r['exclusive_to_me'] == "YES")
-        print(f"\n[!] Exclusive Files (Only you submitted): {exclusive_total}")
-        print(f"[!] Grand Total Matched: {len(results)}")
+        print(f"\n[!] Exclusive Files (unique_sources == 1): {exclusive_total}")
+        print(f"[!] Grand Total: {len(results)}")
+        print(f"[!] Unique Submitters (source_keys): {len(source_key_counts)}")
         print(f"[!] CSV File Saved: {args.output}\n")
     else:
-        print("[-] No files in that date range were submitted by your API key.")
+        print("[-] No submissions found for your group in that date range.")
 
 
 if __name__ == "__main__":
