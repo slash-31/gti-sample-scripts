@@ -1,0 +1,5 @@
+CLAUDE.md
+*.csv
+__pycache__/
+*.pyc
+.venv/

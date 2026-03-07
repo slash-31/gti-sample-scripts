@@ -29,14 +29,40 @@ A CLI tool for auditing your organization's file submission history on [Google T
 
 8. **Resilient API Handling** — Retry logic with exponential backoff and jitter for 429 (rate-limit) and 5xx (server error) responses. Partial results are preserved if pagination is interrupted.
 
-## How source_key Attribution Works
+## Source Key Discovery
 
-The VT `submitter:me` search modifier returns files submitted by your **group/organization**, not a specific API key. To determine which key submitted each file, the script queries `/files/{hash}/submissions` for every result. Each submission record contains a `source_key` — an 8-character hex identifier unique to each API key.
+Each API key has a unique `source_key` — an 8-character hex identifier that VT stamps on every submission. Use `--discover-key` to automatically find yours:
 
-To discover your own `source_key`:
-1. Submit a known test file via the API
-2. Query `/api/v3/files/{hash}/submissions` for that file
-3. Your `source_key` appears in the submission attributes
+```bash
+python gti_hunter.py -k YOUR_API_KEY --discover-key
+```
+
+This submits a small probe file, waits for indexing, and displays your key info:
+
+```
+### YOUR API KEY INFO ###
++----------------------+----------------------------+
+| Field                | Value                      |
++======================+============================+
+| source_key           | 324a3038                   |
++----------------------+----------------------------+
+| user_id              | jsmith                     |
++----------------------+----------------------------+
+| group                | example_com                |
++----------------------+----------------------------+
+| group_users          | 11                         |
++----------------------+----------------------------+
+| submission_interface | api                        |
++----------------------+----------------------------+
+| submission_country   | US                         |
++----------------------+----------------------------+
+| submission_city      | new york                   |
++----------------------+----------------------------+
+| api_key_prefix       | a32c8680...                |
++----------------------+----------------------------+
+```
+
+Once you know your `source_key`, use `--source-key` to filter audit results to just your submissions.
 
 ## Prerequisites
 
@@ -66,6 +92,7 @@ Each page of 300 results consumes one Intelligence Search credit. Additionally, 
 
 ```bash
 python gti_hunter.py -k <API_KEY> -s <START_DATE> -e <END_DATE> [options]
+python gti_hunter.py -k <API_KEY> --discover-key
 ```
 
 ### CLI Arguments
@@ -73,16 +100,22 @@ python gti_hunter.py -k <API_KEY> -s <START_DATE> -e <END_DATE> [options]
 | Short | Long | Required | Description |
 |---|---|---|---|
 | `-k` | `--key` | Yes | Your GTI / VirusTotal Enterprise API key |
-| `-s` | `--start` | Yes | Start date in `YYYY-MM-DD` format |
-| `-e` | `--end` | Yes | End date in `YYYY-MM-DD` format |
+| `-s` | `--start` | Yes* | Start date in `YYYY-MM-DD` format |
+| `-e` | `--end` | Yes* | End date in `YYYY-MM-DD` format |
 | `-o` | `--output` | No | Output CSV filename (default: `my_submissions.csv`) |
 | `-l` | `--limit` | No | Cap the total number of matched results |
 | `-x` | `--exclusive` | No | Only return files where `unique_sources == 1` |
 | | `--source-key` | No | Filter to a specific submitter's source_key |
+| | `--discover-key` | No | Discover your API key's source_key and exit |
+
+\* Not required when using `--discover-key`.
 
 ### Examples
 
 ```bash
+# Discover your source_key
+python gti_hunter.py -k YOUR_API_KEY --discover-key
+
 # Audit all group submissions for the last 6 months
 python gti_hunter.py -k YOUR_API_KEY -s 2025-01-01 -e 2025-06-30
 

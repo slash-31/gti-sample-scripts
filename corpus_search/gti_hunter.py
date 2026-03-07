@@ -12,6 +12,9 @@ Workflow:
   4. Optionally filters to a specific source_key with --source-key.
 
 Usage examples:
+    # Discover your API key's source_key
+    python gti_hunter.py -k API_KEY --discover-key
+
     # All group submissions in date range
     python gti_hunter.py -k API_KEY -s 2025-01-01 -e 2025-06-30
 
@@ -28,10 +31,13 @@ Requirements:
 """
 
 import csv
+import hashlib
 import argparse
 import sys
 import time
 import random
+import tempfile
+import os
 from datetime import datetime, timezone
 from collections import Counter
 
@@ -140,6 +146,64 @@ def get_file_submissions(api_key, sha256):
     if data is None:
         return []
     return [s.get('attributes', {}) for s in data.get('data', [])]
+
+
+def discover_my_source_key(api_key):
+    """
+    Discover this API key's source_key by submitting a unique probe file,
+    then looking up its submissions to find the source_key.
+    Returns (source_key, submission_details) or (None, None).
+    """
+    headers = {"x-apikey": api_key}
+
+    # Create a unique probe file
+    probe_content = f"source_key_probe_{api_key[:8]}_{int(time.time())}_{random.randint(0, 999999)}"
+    probe_bytes = probe_content.encode('utf-8')
+    probe_hash = hashlib.sha256(probe_bytes).hexdigest()
+
+    print(f"[*] Submitting probe file to discover your source_key...")
+    print(f"[*] Probe SHA256: {probe_hash}")
+
+    # Submit the probe file
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as tmp:
+            tmp.write(probe_bytes)
+            tmp_path = tmp.name
+
+        resp = requests.post(
+            f"{VT_BASE}/files",
+            headers=headers,
+            files={"file": ("source_key_probe.txt", open(tmp_path, 'rb'))},
+            timeout=60,
+        )
+        os.unlink(tmp_path)
+
+        if resp.status_code != 200:
+            print(f"[-] Probe submission failed: HTTP {resp.status_code}")
+            return None, None
+
+        print(f"[+] Probe submitted. Waiting for indexing...")
+
+    except requests.exceptions.RequestException as e:
+        print(f"[-] Probe submission failed: {e}")
+        return None, None
+
+    # Wait for VT to index, then fetch submissions
+    for wait_secs in [5, 5, 10, 15]:
+        time.sleep(wait_secs)
+        data = api_get(f"{VT_BASE}/files/{probe_hash}/submissions",
+                       headers, params={"limit": 10})
+        if data and data.get('data'):
+            sub = data['data'][0].get('attributes', {})
+            source_key = sub.get('source_key')
+            if source_key:
+                return source_key, sub
+        print(f"[*] Not indexed yet, waiting {wait_secs}s more...")
+
+    print("[-] Could not retrieve source_key — probe file may not be indexed yet.")
+    print(f"[*] Try again in a minute, or look up the probe hash manually:")
+    print(f"    {probe_hash}")
+    return None, None
 
 
 def discover_group_source_keys(api_key, group_id):
@@ -299,8 +363,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="GTI Enterprise Submission Hunter — Audit group corpus submissions with submitter attribution")
     parser.add_argument("-k", "--key", required=True, help="Your VirusTotal/GTI API Key")
-    parser.add_argument("-s", "--start", required=True, help="Start Date (YYYY-MM-DD)")
-    parser.add_argument("-e", "--end", required=True, help="End Date (YYYY-MM-DD)")
+    parser.add_argument("-s", "--start", default=None, help="Start Date (YYYY-MM-DD)")
+    parser.add_argument("-e", "--end", default=None, help="End Date (YYYY-MM-DD)")
     parser.add_argument("-o", "--output", default="my_submissions.csv", help="Output CSV file name")
     parser.add_argument("-l", "--limit", type=int, help="Cap total matched results")
     parser.add_argument("-x", "--exclusive", action="store_true",
@@ -308,8 +372,48 @@ def main():
     parser.add_argument("--source-key", default=None,
                         help="Filter results to a specific submitter source_key "
                              "(omit to show all group submissions)")
+    parser.add_argument("--discover-key", action="store_true",
+                        help="Discover your API key's source_key by submitting a probe file, "
+                             "then display your key info and exit")
 
     args = parser.parse_args()
+
+    # --discover-key mode: find and display the source_key for this API key
+    if args.discover_key:
+        print("### SOURCE_KEY DISCOVERY ###\n")
+
+        # Resolve user/group info
+        user_id, group_id, _ = resolve_user_and_group(args.key)
+        group_users = []
+        if group_id:
+            group_users = discover_group_source_keys(args.key, group_id)
+
+        # Discover source_key via probe submission
+        print()
+        source_key, sub_details = discover_my_source_key(args.key)
+
+        if source_key:
+            print(f"\n### YOUR API KEY INFO ###")
+            info = [
+                ["source_key", source_key],
+                ["user_id", user_id or "N/A"],
+                ["group", group_id or "N/A"],
+                ["group_users", len(group_users) if group_users else "N/A"],
+                ["submission_interface", sub_details.get('interface', 'N/A')],
+                ["submission_country", sub_details.get('country', 'N/A')],
+                ["submission_city", sub_details.get('city', 'N/A')],
+                ["api_key_prefix", args.key[:8] + "..."],
+            ]
+            print(tabulate(info, headers=["Field", "Value"], tablefmt="grid"))
+            print(f"\n[+] Use this source_key to filter submissions:")
+            print(f"    python gti_hunter.py -k YOUR_KEY -s START -e END --source-key {source_key}\n")
+        else:
+            print("\n[-] Discovery failed. See messages above.")
+        return
+
+    # Normal audit mode — require date args
+    if not args.start or not args.end:
+        parser.error("-s/--start and -e/--end are required (unless using --discover-key)")
 
     if validate_date(args.start) is None:
         print(f"[-] Invalid start date '{args.start}'. Expected format: YYYY-MM-DD")
