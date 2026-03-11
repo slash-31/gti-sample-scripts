@@ -539,9 +539,10 @@ def main():
     p_fetch.add_argument("-e", "--end", required=True, help="End Date (YYYY-MM-DD)")
     p_fetch.add_argument("-o", "--output", default=None,
                          help="Output JSON filename (default: submissions_START_END.json)")
-    p_fetch.add_argument("--submitter", required=True,
+    p_fetch.add_argument("--submitter", default="US",
                          help="Scope search via submitter:<value>. "
-                              "Use a country code (e.g. US), source_key, user_id, or 'me'.")
+                              "Use a country code (e.g. US), source_key, user_id, or 'me'. "
+                              "(default: US)")
 
     # -- audit --
     p_audit = subparsers.add_parser('audit',
