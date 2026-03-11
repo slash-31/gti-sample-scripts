@@ -14,8 +14,8 @@ Usage examples:
     # Discover your API key's source_key
     python gti_hunter.py discover -k API_KEY
 
-    # Phase 1 — download file list
-    python gti_hunter.py fetch -k API_KEY -s 2025-01-01 -e 2025-06-30
+    # Phase 1 — download file list scoped by submitter (country, source_key, user_id, or 'me')
+    python gti_hunter.py fetch -k API_KEY -s 2025-01-01 -e 2025-06-30 --submitter US
 
     # Phase 2 — audit with source_key filtering
     python gti_hunter.py audit -k API_KEY -f submissions_2025-01-01_2025-06-30.json --source-key 324a3038
@@ -286,15 +286,8 @@ def cmd_fetch(args):
     headers = {"x-apikey": api_key}
     search_url = f"{VT_BASE}/intelligence/search"
 
-    # Use submitter:<identifier> to scope to a specific submitter,
-    # or submitter:me for the entire group.
-    # VT accepts: source_key, user_id, or "me" as submitter values.
-    if args.submitter:
-        query = f"submitter:{args.submitter} fs:{args.start}+ fs:{args.end}-"
-        suffix = f"_{args.submitter}"
-    else:
-        query = f"submitter:me fs:{args.start}+ fs:{args.end}-"
-        suffix = ""
+    query = f"submitter:{args.submitter} fs:{args.start}+ fs:{args.end}-"
+    suffix = f"_{args.submitter}"
 
     output_file = args.output or f"submissions_{args.start}_{args.end}{suffix}.json"
     all_files = []
@@ -546,9 +539,9 @@ def main():
     p_fetch.add_argument("-e", "--end", required=True, help="End Date (YYYY-MM-DD)")
     p_fetch.add_argument("-o", "--output", default=None,
                          help="Output JSON filename (default: submissions_START_END.json)")
-    p_fetch.add_argument("--submitter", default=None,
-                         help="Scope search to a specific submitter: source_key (e.g. 20f3cdee), "
-                              "user_id (e.g. caweckerly), or omit for group-wide (submitter:me)")
+    p_fetch.add_argument("--submitter", required=True,
+                         help="Scope search via submitter:<value>. "
+                              "Use a country code (e.g. US), source_key, user_id, or 'me'.")
 
     # -- audit --
     p_audit = subparsers.add_parser('audit',
