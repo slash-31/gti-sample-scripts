@@ -14,20 +14,23 @@ A CLI tool for auditing your organization's file submission history on [Google T
 
 5. **Data Extraction** — For each file the script pulls:
    - SHA-256 and MD5 hashes
-   - File type description and meaningful filename
+   - File type description, type extension, and meaningful filename
+   - Whether the file is downloadable from VT
    - Submission date, first-submission date
    - `source_key` of the submitter (unique per API key)
    - All `source_keys` that have submitted the file
-   - Submission interface (api/web), country, and city
+   - Submission interface (api/web)
    - Unique source count and total submission count
 
-6. **Optional Source Key Filtering** — Pass `--source-key <key>` to filter results to a specific submitter's API key. Omit it to see all group submissions with attribution.
+6. **Optional Source Key Filtering** — Pass `--source-key <key>` to filter results to a specific submitter's API key. When filtering, the script paginates through all submissions for each file to ensure the target source_key is found even on files with many submitters. Omit it to see all group submissions with attribution.
 
-7. **Multi-Format Reporting**:
-   - **Terminal** — Live progress counter, top-10 data preview, file-type breakdown, source_key breakdown (who submitted the most files), exclusive count, and grand total.
+7. **Concurrent Submission Lookups** — Submission details are fetched in parallel (10 threads) for faster processing, especially on large result sets.
+
+8. **Multi-Format Reporting**:
+   - **Terminal** — Live progress counter, top-10 data preview, file-type breakdown, top-10 source_key breakdown, exclusive count, and grand total.
    - **CSV** — Full dataset for long-term auditing or integration into security tools.
 
-8. **Resilient API Handling** — Retry logic with exponential backoff and jitter for 429 (rate-limit) and 5xx (server error) responses. Partial results are preserved if pagination is interrupted.
+9. **Resilient API Handling** — Retry logic with exponential backoff and jitter for 429 (rate-limit) and 5xx (server error) responses. Partial results are preserved if pagination is interrupted.
 
 ## Source Key Discovery
 
@@ -86,7 +89,7 @@ pip install requests tabulate
 
 ### API Quota
 
-Each page of 300 results consumes one Intelligence Search credit. Additionally, each file requires one API call to `/files/{hash}/submissions` for source_key attribution.
+Each page of 300 results consumes one Intelligence Search credit. Additionally, each file requires at least one API call to `/files/{hash}/submissions` for source_key attribution. When using `--source-key`, the script may paginate through multiple pages of submissions per file to locate the target key.
 
 ## Usage
 
@@ -147,10 +150,10 @@ python gti_hunter.py -k YOUR_API_KEY -s 2025-01-01 -e 2025-06-30 -l 500
 [+] Checked 192 files, 192 matched...
 ```
 
-### Terminal — Source Key Breakdown
+### Terminal — Top 10 Submitters
 
 ```
-### SUBMISSIONS BY SOURCE_KEY ###
+### TOP 10 SUBMITTERS BY SOURCE_KEY ###
 +--------------+---------+
 | source_key   | Files   |
 +--------------+---------+
@@ -180,6 +183,8 @@ The output file contains one row per file with the following columns:
 | `md5` | MD5 hash |
 | `filename` | Original filename (VirusTotal's "meaningful name") |
 | `type` | File type description (e.g., Android, Win32 EXE, PDF) |
+| `type_extension` | File extension (e.g., `exe`, `apk`, `sh`) |
+| `downloadable` | Whether the file can be downloaded from VT (`True`/`False`) |
 | `exclusive_to_me` | `YES` if only one submitter, `NO` otherwise |
 | `unique_sources` | Number of distinct entities that have submitted this file |
 | `total_submissions` | Total number of times the file has been submitted |
@@ -188,8 +193,6 @@ The output file contains one row per file with the following columns:
 | `source_key` | 8-char hex ID of the submitter's API key |
 | `all_source_keys` | Comma-separated list of all source_keys for this file |
 | `submission_interface` | How the file was submitted (`api`, `web`, etc.) |
-| `submission_country` | Country of the submitter |
-| `submission_city` | City of the submitter |
 
 ## API Endpoints Used
 

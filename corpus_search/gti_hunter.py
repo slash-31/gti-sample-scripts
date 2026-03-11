@@ -40,6 +40,7 @@ import tempfile
 import os
 from datetime import datetime, timezone
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import requests
@@ -136,16 +137,43 @@ def resolve_user_and_group(api_key):
 
 
 
-def get_file_submissions(api_key, sha256):
+def get_file_submissions(api_key, sha256, target_source_key=None):
     """
-    Fetch all submissions for a given file hash.
-    Returns list of submission attribute dicts.
+    Fetch submissions for a given file hash.
+    If target_source_key is provided, paginates until that key is found
+    or all submissions are exhausted. Otherwise returns first page only.
     """
     headers = {"x-apikey": api_key}
-    data = api_get(f"{VT_BASE}/files/{sha256}/submissions", headers, params={"limit": 40})
-    if data is None:
-        return []
-    return [s.get('attributes', {}) for s in data.get('data', [])]
+    all_subs = []
+    cursor = None
+
+    while True:
+        params = {"limit": 40}
+        if cursor:
+            params['cursor'] = cursor
+        data = api_get(f"{VT_BASE}/files/{sha256}/submissions", headers, params)
+        if data is None:
+            break
+
+        page_subs = [s.get('attributes', {}) for s in data.get('data', [])]
+        if not page_subs:
+            break
+        all_subs.extend(page_subs)
+
+        # If we're looking for a specific key and found it, stop early
+        if target_source_key:
+            if any(s.get('source_key') == target_source_key for s in page_subs):
+                break
+
+        # If no target key, just return first page (original behavior)
+        if not target_source_key:
+            break
+
+        cursor = data.get('meta', {}).get('cursor')
+        if not cursor:
+            break
+
+    return all_subs
 
 
 def discover_my_source_key(api_key):
@@ -284,13 +312,32 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
         if not files:
             break
 
+        # Pre-filter files before expensive submission lookups
+        candidates = []
         for f in files:
             attr = f.get('attributes', {})
             sha256 = f.get('id')
             total_checked += 1
 
-            # Fetch submission details to get source_key attribution
-            subs = get_file_submissions(api_key, sha256)
+            unique_src = attr.get('unique_sources', 0)
+            if exclusive_only and unique_src != 1:
+                continue
+
+            candidates.append((sha256, attr))
+
+        # Fetch submissions concurrently for candidates
+        submission_map = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(get_file_submissions, api_key, sha256, filter_source_key): sha256
+                for sha256, _ in candidates
+            }
+            for future in as_completed(futures):
+                sha256 = futures[future]
+                submission_map[sha256] = future.result()
+
+        for sha256, attr in candidates:
+            subs = submission_map.get(sha256, [])
 
             # Collect all unique source_keys for this file
             file_source_keys = set()
@@ -299,7 +346,6 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
             for s in subs:
                 sk = s.get('source_key', 'unknown')
                 file_source_keys.add(sk)
-                source_key_counts[sk] += 1
                 if earliest_sub is None or s.get('date', 0) < earliest_sub.get('date', 0):
                     earliest_sub = s
                 if filter_source_key and sk == filter_source_key:
@@ -309,21 +355,20 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
             if filter_source_key and filter_source_key not in file_source_keys:
                 continue
 
+            # Use the matched submission if filtering, otherwise the earliest
+            display_sub = matched_sub or earliest_sub or {}
+
             f_type = attr.get('type_description', 'N/A')
             unique_src = attr.get('unique_sources', 0)
             is_exclusive = "YES" if unique_src == 1 else "NO"
-
-            if exclusive_only and unique_src != 1:
-                continue
-
-            # Use the matched submission if filtering, otherwise the earliest
-            display_sub = matched_sub or earliest_sub or {}
 
             all_results.append({
                 "sha256": sha256,
                 "md5": attr.get('md5', 'N/A'),
                 "filename": attr.get('meaningful_name', 'N/A'),
                 "type": f_type,
+                "type_extension": attr.get('type_extension', 'N/A'),
+                "downloadable": attr.get('downloadable', False),
                 "exclusive_to_me": is_exclusive,
                 "unique_sources": unique_src,
                 "total_submissions": attr.get('times_submitted', 0),
@@ -332,10 +377,10 @@ def fetch_and_audit_submissions(api_key, start_date, end_date, output_file,
                 "source_key": display_sub.get('source_key', 'N/A'),
                 "all_source_keys": ", ".join(sorted(file_source_keys)),
                 "submission_interface": display_sub.get('interface', 'N/A'),
-                "submission_country": display_sub.get('country', 'N/A'),
-                "submission_city": display_sub.get('city', 'N/A'),
             })
             type_counts[f_type] += 1
+            for sk in file_source_keys:
+                source_key_counts[sk] += 1
 
             if limit and len(all_results) >= limit:
                 break
@@ -448,8 +493,8 @@ def main():
         summary_data = [[f_type, count] for f_type, count in type_counts.items()]
         print(tabulate(summary_data, headers=["File Type", "Count"], tablefmt="grid"))
 
-        print(f"\n### SUBMISSIONS BY SOURCE_KEY ###")
-        sk_data = [[sk, count] for sk, count in source_key_counts.most_common()]
+        print(f"\n### TOP 10 SUBMITTERS BY SOURCE_KEY ###")
+        sk_data = [[sk, count] for sk, count in source_key_counts.most_common(10)]
         print(tabulate(sk_data, headers=["source_key", "Files"], tablefmt="grid"))
 
         exclusive_total = sum(1 for r in results if r['exclusive_to_me'] == "YES")
