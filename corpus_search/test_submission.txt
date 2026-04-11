@@ -1,0 +1,30 @@
+A Hacker's Lament — Why Crime Doesn't Compile
+
+You sit in the dark with your hoodie up tight,
+Thinking you're clever, a digital knight.
+But let me be real, let me lay it out plain:
+Your "elite" lifestyle is remarkably lame.
+
+You phish and you spoof and you pivot and spray,
+But the feds keep receipts — they don't throw them away.
+That VPN you trust? It's a tissue-thin veil.
+Your OPSEC is mid and you're headed for jail.
+
+While pen testers profit and sleep like the dead,
+You're refreshing your Telegram, drowning in dread.
+They get dental and PTO, stock options too —
+They hack the same boxes but legally, boo.
+
+You brag on the forums, "I popped forty shells!"
+Cool story — your codefendant already tells.
+That ransomware fortune in crypto you stashed?
+The blockchain is public, your dreams have been dashed.
+
+So hang up the black hat, go learn something real,
+A SANS cert, a degree — whatever's your deal.
+The world needs defenders, not script-kiddie clowns.
+Stop burning your future for underground crowns.
+
+-- This file exists solely to test VT corpus submission.
+-- Generated: 2026-03-06
+-- If you're reading this on VirusTotal, hi there.
